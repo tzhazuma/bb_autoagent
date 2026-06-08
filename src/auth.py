@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BB_URL = "https://elearning.shanghaitech.edu.cn:8443"
+DEFAULT_BB_URL = "https://elearning.shanghaitech.edu.cn:8443/webapps/portal/frameset.jsp"
 DEFAULT_SSO_URL = "https://ids.shanghaitech.edu.cn/authserver/login"
 SESSION_FILE = "session.json"
 
@@ -66,6 +66,7 @@ class BlackboardAuth:
             slow_mo=self.slow_mo,
         )
         self._context = await self._browser.new_context(
+            ignore_https_errors=True,
             viewport={"width": 1280, "height": 800},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -83,11 +84,38 @@ class BlackboardAuth:
         page = await self._ensure_browser()
         logger.info(f"Navigating to Blackboard: {self.base_url}")
 
+        nav_success = False
         try:
-            await page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+            response = await page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
+            if response:
+                nav_success = True
+                nav_success = response.ok or response.status in (301, 302, 303, 307, 308)
         except Exception as e:
-            logger.error(f"Failed to navigate to Blackboard: {e}")
-            return False
+            logger.warning(f"Navigation to {self.base_url} failed: {e}")
+
+        if not nav_success:
+            logger.info(f"Trying alternative Blackboard portal URL")
+            alt_urls = [
+                "https://elearning.shanghaitech.edu.cn:8443/webapps/bb-BB-BBLEARN/index.jsp",
+                "https://elearning.shanghaitech.edu.cn:8443/webapps/login/",
+            ]
+            for alt_url in alt_urls:
+                try:
+                    response = await page.goto(alt_url, wait_until="domcontentloaded", timeout=15000)
+                    if response and (response.ok or response.status in (301, 302, 303, 307, 308)):
+                        nav_success = True
+                        logger.info(f"Successfully navigated to {alt_url}")
+                        break
+                except Exception:
+                    continue
+
+        if not nav_success:
+            logger.info("Trying direct SSO login page navigation")
+            try:
+                await page.goto(self.sso_url, wait_until="domcontentloaded", timeout=15000)
+            except Exception as e:
+                logger.error(f"Failed to navigate to SSO page: {e}")
+                return False
 
         await self._wait_for_sso_page(page)
 
@@ -295,6 +323,7 @@ class BlackboardAuth:
         )
         self._context = await self._browser.new_context(
             storage_state=storage_state,
+            ignore_https_errors=True,
             viewport={"width": 1280, "height": 800},
         )
         self._page = await self._context.new_page()
