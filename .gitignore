@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# Environment
+.env
+*.env.local
+session.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+bb_autoagent.log
+
+# Downloads / submissions
+downloads/
+submissions/
+exports/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Blackboard REST API (optional)
+bb_rest_config.json

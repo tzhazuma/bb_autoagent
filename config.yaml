@@ -1,0 +1,55 @@
+# bb_autoagent Configuration
+# Default configuration - override with environment variables
+
+# Blackboard instance settings
+blackboard:
+  base_url: "https://elearning.shanghaitech.edu.cn:8443"
+  sso_url: "https://ids.shanghaitech.edu.cn/authserver/login"
+  login_timeout: 30000
+
+# Course mappings (key: short name, value: course ID)
+# Find course IDs in Blackboard URL when viewing a course
+courses:
+  # example_course: "_12345_1"
+
+# Grading configuration
+grading:
+  # Default rubric template
+  default_rubric: "prompts/grading_default.yaml"
+  # LLM provider settings
+  llm:
+    provider: "openai"
+    model: "gpt-4o"
+    temperature: 0.1
+    max_tokens: 2000
+  # Grading session settings
+  batch_size: 5
+  retry_attempts: 3
+
+# Submission download settings
+submissions:
+  download_dir: "./downloads"
+  supported_formats:
+    - ".pdf"
+    - ".docx"
+    - ".doc"
+    - ".txt"
+    - ".py"
+    - ".java"
+    - ".cpp"
+    - ".c"
+    - ".ipynb"
+
+# Grade Center settings
+gradebook:
+  # Timeout for grade upload operations (ms)
+  upload_timeout: 60000
+  # Delay between grade cell updates (ms, to avoid rate-limiting)
+  cell_delay: 500
+  # Verify after upload
+  verify_after_upload: true
+
+# Session settings
+session:
+  file: "session.json"
+  max_age_hours: 24
