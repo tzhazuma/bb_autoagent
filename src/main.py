@@ -93,7 +93,7 @@ async def cmd_login(args):
         console.print("[yellow]Logging in to Blackboard...[/yellow]")
         await auth.login()
         if await auth.is_authenticated():
-            session_file = config.get("session", {}).get("file", "session.json")
+            session_file = config.session.file
             await auth.save_session(session_file)
             console.print(f"[green]Login successful! Session saved to {session_file}[/green]")
         else:
