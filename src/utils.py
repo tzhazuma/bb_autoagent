@@ -152,6 +152,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     with open(path, "r") as f:
         config_dict = yaml.safe_load(f) or {}
     config_dict.setdefault("courses", {})
+    if config_dict.get("courses") is None:
+        config_dict["courses"] = {}
     _apply_env_overrides(config_dict)
     _coerce_env_types(config_dict)
     return AppConfig(**config_dict)

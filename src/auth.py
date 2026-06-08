@@ -14,7 +14,12 @@ SESSION_FILE = "session.json"
 
 SEL_USERNAME = "#username"
 SEL_PASSWORD = "#password"
-SEL_SUBMIT_BUTTONS = ["#dlsubmit", "button[type='submit']", ".login-btn", "input[type='submit']"]
+SEL_SALT_PASSWORD = "#saltPassword"
+SEL_PWD_ENCRYPT_SALT = "#pwdEncryptSalt"
+SEL_SUBMIT = "#login_submit"
+SEL_ACCOUNT_TAB = "#userNameLogin_a"
+SEL_PWD_LOGIN_DIV = "#pwdLoginDiv"
+SEL_CAPTCHA_DIV = "#captchaDiv"
 
 SEL_MFA_INDICATORS = [
     "#captcha", "#verifyCode", "#authCode",
@@ -87,15 +92,97 @@ class BlackboardAuth:
         await self._wait_for_sso_page(page)
 
         current_url = page.url
-        if SSO_DOMAIN not in current_url:
-            if BB_DOMAIN in current_url:
-                logger.info("Already authenticated, no SSO redirect")
-                return True
+        if SSO_DOMAIN in current_url:
+            logger.info("On SSO login page")
+            return await self._handle_sso_login(page)
+        elif BB_DOMAIN in current_url:
+            logger.info("Already authenticated, no SSO redirect")
+            return True
+        else:
             logger.warning(f"Unexpected URL after navigation: {current_url}")
             return False
 
-        logger.info("On SSO login page, filling credentials")
-        return await self._fill_and_submit_login(page)
+    async def _handle_sso_login(self, page: Page) -> bool:
+        await asyncio.sleep(1)
+
+        pwd_div = await page.query_selector(SEL_PWD_LOGIN_DIV)
+        if pwd_div:
+            is_visible = await pwd_div.is_visible()
+            if not is_visible:
+                logger.info("Password login form hidden, clicking account login tab")
+                tab = await page.query_selector(SEL_ACCOUNT_TAB)
+                if tab:
+                    await tab.click()
+                    await asyncio.sleep(0.5)
+
+        is_visible = False
+        for attempt in range(5):
+            pwd_div = await page.query_selector(SEL_PWD_LOGIN_DIV)
+            if pwd_div:
+                is_visible = await pwd_div.is_visible()
+                if is_visible:
+                    break
+            await asyncio.sleep(1)
+
+        if not is_visible:
+            logger.warning("Could not show password login form, trying direct fill")
+
+        try:
+            await page.wait_for_selector(SEL_USERNAME, timeout=10000)
+        except Exception:
+            logger.error("Username field not found on SSO page")
+            return False
+
+        await page.fill(SEL_USERNAME, "")
+        await page.type(SEL_USERNAME, self.username, delay=30)
+
+        await page.fill(SEL_PASSWORD, "")
+        await page.type(SEL_PASSWORD, self.password, delay=30)
+
+        captcha_div = await page.query_selector(SEL_CAPTCHA_DIV)
+        if captcha_div:
+            captcha_visible = await captcha_div.is_visible()
+            if captcha_visible:
+                logger.warning("Captcha required — please solve it manually")
+                try:
+                    captcha_input = await page.wait_for_selector("#captcha", timeout=60000)
+                    if captcha_input:
+                        logger.info("Waiting for manual captcha input...")
+                        await page.wait_for_function(
+                            "() => document.querySelector('#captcha') && document.querySelector('#captcha').value.length >= 4",
+                            timeout=60000
+                        )
+                except Exception:
+                    logger.warning("Captcha timeout — proceeding anyway")
+
+        logger.info("Encrypting password and submitting login form")
+        encrypt_result = await page.evaluate(
+            """([password]) => {
+                try {
+                    var saltEl = document.getElementById('pwdEncryptSalt');
+                    var salt = saltEl ? saltEl.value : 'rjBFAaHsNkKAhpoi';
+                    if (!salt) salt = 'rjBFAaHsNkKAhpoi';
+
+                    if (typeof encryptPassword === 'function') {
+                        var encrypted = encryptPassword(password, salt);
+                        document.getElementById('saltPassword').value = encrypted;
+                    }
+                    document.getElementById('password').disabled = true;
+                    document.querySelector('.loginFromClass').submit();
+                    return true;
+                } catch(e) {
+                    return false;
+                }
+            }""",
+            [self.password]
+        )
+
+        if not encrypt_result:
+            logger.warning("JS encryption failed, trying submit button click")
+            await self._click_submit(page)
+
+        logger.info("Waiting for redirect back to Blackboard...")
+        return await self._wait_for_bb_redirect(page)
 
     async def _wait_for_sso_page(self, page: Page, timeout: int = 15000) -> None:
         try:
@@ -109,40 +196,16 @@ class BlackboardAuth:
         except Exception:
             logger.debug("Timeout waiting for page transition, proceeding with current state")
 
-    async def _fill_and_submit_login(self, page: Page) -> bool:
+    async def _click_submit(self, page: Page) -> bool:
         try:
-            await page.wait_for_selector(SEL_USERNAME, timeout=10000)
+            submit_btn = await page.wait_for_selector(SEL_SUBMIT, timeout=8000)
+            if submit_btn:
+                await submit_btn.click()
+                logger.info("Clicked login submit button")
+                return True
         except Exception:
-            logger.error("Username field not found on SSO page")
-            return False
-
-        await page.fill(SEL_USERNAME, "")
-        await page.type(SEL_USERNAME, self.username, delay=50)
-
-        await page.fill(SEL_PASSWORD, "")
-        await page.type(SEL_PASSWORD, self.password, delay=50)
-
-        if await self._detect_mfa_or_captcha(page):
-            logger.warning("MFA/Captcha detected — waiting for manual intervention...")
-            await self._wait_for_manual_input(page)
-
-        submitted = False
-        for selector in SEL_SUBMIT_BUTTONS:
-            try:
-                btn = await page.query_selector(selector)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    submitted = True
-                    logger.info(f"Clicked login button: {selector}")
-                    break
-            except Exception:
-                continue
-
-        if not submitted:
-            logger.info("No submit button found, pressing Enter")
-            await page.press(SEL_PASSWORD, "Enter")
-
-        return await self._wait_for_bb_redirect(page)
+            pass
+        return False
 
     async def _detect_mfa_or_captcha(self, page: Page) -> bool:
         for selector in SEL_MFA_INDICATORS:
