@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -212,17 +213,17 @@ class BlackboardAuth:
         logger.info("Waiting for redirect back to Blackboard...")
         return await self._wait_for_bb_redirect(page)
 
-    async def _wait_for_sso_page(self, page: Page, timeout: int = 15000) -> None:
-        try:
-            await page.wait_for_function(
-                f"""() => {{
-                    const url = window.location.href;
-                    return url.includes('{SSO_DOMAIN}') || url.includes('{BB_DOMAIN}');
-                }}""",
-                timeout=timeout,
-            )
-        except Exception:
-            logger.debug("Timeout waiting for page transition, proceeding with current state")
+    async def _wait_for_sso_page(self, page: Page, timeout: int = 30000) -> None:
+        start = time.monotonic()
+        while (time.monotonic() - start) < timeout / 1000:
+            try:
+                url = page.url
+                if SSO_DOMAIN in url or BB_DOMAIN in url:
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        logger.debug("Timeout waiting for page transition, proceeding with current state")
 
     async def _click_submit(self, page: Page) -> bool:
         try:
