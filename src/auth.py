@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_BB_URL = "https://elearning.shanghaitech.edu.cn:8443/webapps/portal/frameset.jsp"
 DEFAULT_SSO_URL = "https://ids.shanghaitech.edu.cn/authserver/login"
 SESSION_FILE = "session.json"
+BYPASS_DOMAINS = "elearning.shanghaitech.edu.cn,ids.shanghaitech.edu.cn,.shanghaitech.edu.cn"
+
+_PROXY_VARS = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"]
+
+
+def _clear_proxy_for_session():
+    saved = {}
+    for var in _PROXY_VARS:
+        saved[var] = os.environ.pop(var, None)
+    os.environ["no_proxy"] = BYPASS_DOMAINS
+    os.environ["NO_PROXY"] = BYPASS_DOMAINS
+    return saved
+
+
+def _restore_proxy(saved: dict):
+    for var, val in saved.items():
+        if val is not None:
+            os.environ[var] = val
+        else:
+            os.environ.pop(var, None)
 
 SEL_USERNAME = "#username"
 SEL_PASSWORD = "#password"
@@ -60,21 +81,30 @@ class BlackboardAuth:
             return self._page
 
         if self._playwright is None:
-            self._playwright = await async_playwright().start()
+            saved_proxy = _clear_proxy_for_session()
+            try:
+                self._playwright = await async_playwright().start()
+            finally:
+                _restore_proxy(saved_proxy)
 
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            slow_mo=self.slow_mo,
-        )
-        self._context = await self._browser.new_context(
-            ignore_https_errors=True,
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
-        self._page = await self._context.new_page()
+        saved_proxy = _clear_proxy_for_session()
+        try:
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+                args=["--no-proxy-server"],
+            )
+            self._context = await self._browser.new_context(
+                ignore_https_errors=True,
+                viewport={"width": 1280, "height": 800},
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
+            self._page = await self._context.new_page()
+        finally:
+            _restore_proxy(saved_proxy)
         return self._page
 
     async def login(self) -> bool:
@@ -315,19 +345,24 @@ class BlackboardAuth:
 
         await self.close()
 
-        if self._playwright is None:
-            self._playwright = await async_playwright().start()
+        saved_proxy = _clear_proxy_for_session()
+        try:
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
 
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            slow_mo=self.slow_mo,
-        )
-        self._context = await self._browser.new_context(
-            storage_state=storage_state,
-            ignore_https_errors=True,
-            viewport={"width": 1280, "height": 800},
-        )
-        self._page = await self._context.new_page()
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+                args=["--no-proxy-server"],
+            )
+            self._context = await self._browser.new_context(
+                storage_state=storage_state,
+                ignore_https_errors=True,
+                viewport={"width": 1280, "height": 800},
+            )
+            self._page = await self._context.new_page()
+        finally:
+            _restore_proxy(saved_proxy)
 
         if await self.is_authenticated():
             logger.info("Loaded session is valid")
