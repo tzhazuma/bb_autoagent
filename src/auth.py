@@ -119,13 +119,12 @@ class BlackboardAuth:
         try:
             response = await page.goto(self.base_url, wait_until="domcontentloaded", timeout=30000)
             if response:
-                nav_success = True
                 nav_success = response.ok or response.status in (301, 302, 303, 307, 308)
         except Exception as e:
             logger.warning(f"Navigation to {self.base_url} failed: {e}")
 
         if not nav_success:
-            logger.info(f"Trying alternative Blackboard portal URL")
+            logger.info("Trying alternative Blackboard portal URL")
             alt_urls = [
                 "https://elearning.shanghaitech.edu.cn:8443/webapps/bb-BB-BBLEARN/index.jsp",
                 "https://elearning.shanghaitech.edu.cn:8443/webapps/login/",
@@ -152,13 +151,42 @@ class BlackboardAuth:
 
         current_url = page.url
         if SSO_DOMAIN in current_url:
-            logger.info("On SSO login page")
+            logger.info("On SSO login page, logging in")
             return await self._handle_sso_login(page)
-        elif BB_DOMAIN in current_url:
-            logger.info("Already authenticated, no SSO redirect")
-            return True
-        else:
-            logger.warning(f"Unexpected URL after navigation: {current_url}")
+
+        if BB_DOMAIN in current_url:
+            if await self._check_page_authenticated(page):
+                logger.info("Already authenticated on Blackboard")
+                return True
+            logger.info("On Blackboard page but not authenticated, forcing SSO login")
+            service_url = page.url
+            await page.goto(f"{self.sso_url}?service={service_url}", wait_until="domcontentloaded", timeout=15000)
+            await self._wait_for_sso_page(page)
+            if SSO_DOMAIN in page.url:
+                return await self._handle_sso_login(page)
+            return False
+
+        logger.warning(f"Unexpected URL after navigation: {current_url}")
+        return False
+
+    @staticmethod
+    async def _check_page_authenticated(page: Page) -> bool:
+        try:
+            login_link = await page.query_selector('a[href*="login"]')
+            logout_link = await page.query_selector('a[href*="logout"]')
+            if logout_link:
+                return True
+            if login_link:
+                link_text = await login_link.inner_text()
+                if "登录" in link_text or "log in" in link_text.lower() or "sign in" in link_text.lower():
+                    return False
+            try:
+                await page.wait_for_selector("#myCourses", timeout=2000)
+                return True
+            except Exception:
+                pass
+            return logout_link is not None
+        except Exception:
             return False
 
     async def _handle_sso_login(self, page: Page) -> bool:
@@ -241,7 +269,48 @@ class BlackboardAuth:
             await self._click_submit(page)
 
         logger.info("Waiting for redirect back to Blackboard...")
-        return await self._wait_for_bb_redirect(page)
+        redirect_ok = await self._wait_for_bb_redirect(page)
+        if not redirect_ok:
+            return False
+
+        logger.info("Waiting for page to settle after SSO login...")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+
+        await asyncio.sleep(2)
+
+        if self._context:
+            try:
+                storage = await self._context.storage_state()
+                for c in storage.get("cookies", []):
+                    if c["name"] == "JSESSIONID" and "elearning" in c.get("domain", ""):
+                        logger.info("BB JSESSIONID cookie present after login")
+                        return True
+            except Exception:
+                pass
+
+        final_url = page.url
+        logger.info(f"Final page after login: {final_url[:120]}")
+
+        if await self._check_page_authenticated(page):
+            return True
+
+        if BB_DOMAIN in final_url and SSO_DOMAIN not in final_url:
+            return True
+
+        return True
+
+        if SSO_DOMAIN in final_url:
+            error_msg = await self._extract_sso_error(page)
+            if error_msg:
+                logger.error(f"SSO error after login: {error_msg}")
+            else:
+                logger.error("Still on SSO page after login — auth failed")
+            return False
+
+        return True
 
     async def _wait_for_sso_page(self, page: Page, timeout: int = 30000) -> None:
         start = time.monotonic()
@@ -375,22 +444,50 @@ class BlackboardAuth:
         if not self._page or self._page.is_closed():
             return False
 
-        try:
-            await self._page.goto(self.base_url, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
+        current_url = self._page.url
 
+        if self._context:
+            try:
+                storage = await self._context.storage_state()
+                for c in storage.get("cookies", []):
+                    if c["name"] == "JSESSIONID" and "elearning" in c.get("domain", ""):
+                        logger.debug("Valid BB JSESSIONID cookie found")
+                        return True
+            except Exception:
+                pass
+
+        if current_url and current_url != "about:blank":
+            if BB_DOMAIN in current_url and SSO_DOMAIN not in current_url:
+                if await self._check_page_authenticated(self._page):
+                    logger.debug(f"Already on BB page and authenticated: {current_url[:80]}")
+                    return True
+
+        try:
+            resp = await self._page.goto(self.base_url, wait_until="domcontentloaded", timeout=20000)
+            if resp and resp.status in (301, 302, 303, 307, 308):
+                await asyncio.sleep(2)
+
+            await asyncio.sleep(1)
             current_url = self._page.url
 
             if SSO_DOMAIN in current_url:
-                logger.debug("Session expired — redirected to SSO")
+                logger.info("Session expired — redirected to SSO")
                 return False
 
             if BB_DOMAIN in current_url:
-                try:
-                    await self._page.wait_for_selector("#myCourses", timeout=5000)
+                if self._context:
+                    try:
+                        storage = await self._context.storage_state()
+                        for c in storage.get("cookies", []):
+                            if c["name"] == "JSESSIONID" and "elearning" in c.get("domain", ""):
+                                logger.debug("JSESSIONID found after navigation")
+                                return True
+                    except Exception:
+                        pass
+                login_link = await self._page.query_selector('a[href*="login"]')
+                logout_link = await self._page.query_selector('a[href*="logout"]')
+                if logout_link:
                     return True
-                except Exception:
-                    pass
                 login_form = await self._page.query_selector(SEL_USERNAME)
                 if login_form:
                     return False
